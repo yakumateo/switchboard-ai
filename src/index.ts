@@ -42,19 +42,24 @@ async function enviarConFallback(prompt: string, modelos: string[]) {
 }
 
 // El Trabajador (Worker) con tipo explícito para 'job'
-const worker = new Worker('mensajes-ia', async (job: Job) => {
-    console.log(`📦 Procesando tarea: ${job.id}`);
-    const resultado = await enviarConFallback(job.data.prompt, job.data.modelos);
+// 1. El Worker que "congela" la tarea al vencer el tiempo
+const worker = new Worker('mensajes-ia', async (job) => {
+    console.log(`🚨 ¡TIEMPO CUMPLIDO! Tarea ${job.id} pasando a estado VENCIDA.`);
     
-    // --- NUEVA LÓGICA PARA GUARDAR EN ARCHIVO ---
-    const nombreArchivo = `respuesta-${job.id}.txt`;
-    const contenido = `MODELO: ${resultado.model}\nPROMPT: ${job.data.prompt}\n\nRESPUESTA:\n${resultado.texto}`;
-    
-    fs.writeFileSync(nombreArchivo, contenido);
-    // --------------------------------------------
+    // Marcamos un progreso (opcional, para debug)
+    await job.updateProgress(100);
 
-    console.log(`✅ ¡Éxito! Archivo ${nombreArchivo} creado.`);
-}, { connection });
+    // IMPORTANTE: Devolvemos una promesa que NO se resuelve.
+    // Esto mantiene el job en estado 'active' (Vencida) indefinidamente
+    // hasta que el usuario la mueva manualmente.
+    return new Promise((resolve) => {
+        // No llamamos a resolve(), así el worker se queda "trabajando" 
+        // y la tarea aparece en la lista de 'activas'.
+    });
+}, { 
+    connection, 
+    lockDuration: 60 * 60 * 1000 // 1 hora de bloqueo para que no reintente
+});
 
 // Función para agendar
 async function agendarMensaje(mensaje: string, tiempoRecibido: string | undefined) {
@@ -176,28 +181,45 @@ app.post('/api/agendar', async (req, res) => {
     res.json({ status: 'ok' });
 });
 
+// 2. RUTA PARA COMPLETAR MANUALMENTE (Botón del Dashboard)
+app.post('/api/tareas/:id/completar', async (req, res) => {
+    const { id } = req.params;
+    const job = await aiQueue.getJob(id);
+
+    if (job) {
+        // Forzamos el movimiento a completado
+        // El '0' es el valor de retorno del job
+        await job.moveToCompleted('Hecho por el usuario', '0', false);
+        console.log(`✅ Tarea ${id} confirmada manualmente.`);
+        return res.json({ ok: true });
+    }
+    
+    res.status(404).json({ error: "Tarea no encontrada" });
+});
+
 // 1. Obtener tareas para el dashboard
 app.get('/api/tareas', async (req, res) => {
-    // Obtenemos los últimos trabajos de la cola
-    const [pendientes, completadas] = await Promise.all([
+    const [proximas, activas, completadas] = await Promise.all([
         aiQueue.getJobs(['delayed', 'waiting']),
-        aiQueue.getJobs(['completed'], 0, undefined, false) // Solo los últimos 5 completados
+        aiQueue.getJobs(['active']), // Estas son las "vencidas" que el worker ya tomó
+        aiQueue.getJobs(['completed'], 0, 9, false)
     ]);
 
-    const respuesta = {
-        proximas: pendientes.map(j => ({
+    res.json({
+        proximas: proximas.map(j => ({
             id: j.id,
             prompt: j.data.prompt,
-            correEn: j.opts.delay ? new Date(Number(j.timestamp) + j.opts.delay).toLocaleString() : 'Ahora'
+            correEn: new Date(Number(j.timestamp) + (j.opts.delay || 0)).toLocaleString()
+        })),
+        vencidas: activas.map(j => ({
+            id: j.id,
+            prompt: j.data.prompt
         })),
         historial: completadas.map(j => ({
             id: j.id,
-            prompt: j.data.prompt,
-            finalizado: new Date(j.finishedOn!).toLocaleTimeString()
+            prompt: j.data.prompt
         }))
-    };
-
-    res.json(respuesta);
+    });
 });
 
 // 2. Eliminar tarea
