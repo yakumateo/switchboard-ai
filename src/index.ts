@@ -4,6 +4,11 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import { parse, differenceInMilliseconds } from 'date-fns';
 
+import express from 'express';
+import { createBullBoard } from '@bull-board/api';
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
+import { ExpressAdapter } from '@bull-board/express';
+
 dotenv.config();
 
 const connection = { host: 'localhost', port: 6379 };
@@ -50,23 +55,36 @@ const worker = new Worker('mensajes-ia', async (job: Job) => {
 }, { connection });
 
 // Función para agendar
-async function agendarMensaje(mensaje: string, fechaDestino: string | number) {
-    let delay = 0;
+async function agendarMensaje(mensaje: string, tiempoRecibido: string | undefined) {
+    let delay = 1000; // Por defecto 1 segundo
 
-    if (typeof fechaDestino === 'string') {
-        // Intentamos entender formatos como "2023-12-31 23:59"
-        // Si no se pasa fecha, asumimos que es un número de ms
-        const ahora = new Date();
-        const objetivo = parse(fechaDestino, 'yyyy-MM-dd HH:mm', ahora);
-        delay = differenceInMilliseconds(objetivo, ahora);
+    if (tiempoRecibido) {
+        // Intentamos convertir a número
+        const numeroSueltos = parseInt(tiempoRecibido);
 
-        if (delay < 0) {
-            console.error("❌ Error: La fecha ya pasó.");
-            return;
+        if (!isNaN(numeroSueltos)) {
+            // Si el usuario puso un número (ej: 5000), lo usamos directamente
+            delay = numeroSueltos;
+        } else {
+            // Si no es un número, intentamos parsear como fecha (AAAA-MM-DD HH:mm)
+            try {
+                const ahora = new Date();
+                const objetivo = parse(tiempoRecibido, 'yyyy-MM-dd HH:mm', ahora);
+                const diferencia = differenceInMilliseconds(objetivo, ahora);
+                
+                // Si la fecha es válida y es futura, usamos la diferencia
+                if (!isNaN(diferencia) && diferencia > 0) {
+                    delay = diferencia;
+                }
+            } catch (e) {
+                console.warn("⚠️ No se pudo entender el tiempo. Usando ejecución inmediata.");
+                delay = 1000;
+            }
         }
-    } else {
-        delay = fechaDestino;
     }
+
+    // SEGURIDAD FINAL: Si por alguna razón delay sigue siendo NaN, forzamos 1000
+    const finalDelay = isNaN(delay) ? 1000 : delay;
 
     await aiQueue.add('tarea-ia', 
         { 
@@ -78,28 +96,46 @@ async function agendarMensaje(mensaje: string, fechaDestino: string | number) {
             ] 
         }, 
         { 
-            delay: delay,
+            delay: finalDelay, // Enviamos un número garantizado
             attempts: 5,
             backoff: { type: 'exponential', delay: 10000 }
         }
     );
-    console.log(`🕒 Mensaje agendado para ejecutarse en ${delay / 1000} segundos...`);
+    
+    console.log(`🕒 Tarea agendada para ejecutarse en ${finalDelay / 1000} segundos.`);
 }
 
-// Lógica para capturar argumentos de la terminal
+// 1. Crear el adaptador de Express
+const serverAdapter = new ExpressAdapter();
+serverAdapter.setBasePath('/admin/queues');
+
+// 2. Configurar BullBoard con tu cola actual
+createBullBoard({
+  queues: [new BullMQAdapter(aiQueue)],
+  serverAdapter: serverAdapter,
+});
+
+const app = express();
+
+// 3. Conectar el router del dashboard
+app.use('/admin/queues', serverAdapter.getRouter());
+
+app.listen(3000, () => {
+  console.log('----------------------------------------------------');
+  console.log('🚀 MONITOR ACTIVO v7.0.0');
+  console.log('🔗 Revisa tus mensajes aquí: http://localhost:3000/admin/queues');
+  console.log('----------------------------------------------------');
+});
+
+// --- BLOQUE FINAL DE EJECUCIÓN ---
+// Solo debe haber uno de estos al final de tu archivo
+
 const promptUser = process.argv[2];
-const tiempoUser = process.argv[3]; // Ejemplo: "2025-05-20 15:30" o solo un número
+const tiempoUser = process.argv[3]; // Esto viene como string desde la terminal
 
 if (promptUser) {
-    // Si pasas un tiempo lo usa, si no, lo lanza en 1 segundo
-    agendarMensaje(promptUser, tiempoUser || 1000);
-}
-
-// Detectar si el usuario pasó un mensaje por terminal
-const userPrompt = process.argv[2]; 
-
-if (userPrompt) {
-    agendarMensaje(userPrompt, 1000); // Lo agenda para dentro de 1 segundo
+    // Pasamos el tiempo directamente como string o undefined
+    agendarMensaje(promptUser, tiempoUser);
 } else {
-    console.log("💡 Uso: npx tsx src/index.ts \"Tu mensaje aquí\"");
+    console.log('💡 Uso: npm run ask "Tu mensaje" 5000');
 }
