@@ -183,6 +183,29 @@ app.post('/api/agendar', async (req, res) => {
     res.json({ status: 'ok', fechaProgramada: fechaExtraida || 'Inmediato' });
 });
 
+app.get('/api/tareas', async (req, res) => {
+    // Obtenemos los últimos trabajos de la cola
+    const [pendientes, completadas] = await Promise.all([
+        aiQueue.getJobs(['delayed', 'waiting']),
+        aiQueue.getJobs(['completed'], 0, undefined, false) // Solo los últimos 5 completados
+    ]);
+
+    const respuesta = {
+        proximas: pendientes.map(j => ({
+            id: j.id,
+            prompt: j.data.prompt,
+            correEn: j.opts.delay ? new Date(Number(j.timestamp) + j.opts.delay).toLocaleString() : 'Ahora'
+        })),
+        historial: completadas.map(j => ({
+            id: j.id,
+            prompt: j.data.prompt,
+            finalizado: new Date(j.finishedOn!).toLocaleTimeString()
+        }))
+    };
+
+    res.json(respuesta);
+});
+
 // 3. Conectar el router del dashboard
 app.use('/admin/queues', serverAdapter.getRouter());
 
