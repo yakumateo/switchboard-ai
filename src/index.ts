@@ -9,6 +9,8 @@ import { createBullBoard } from '@bull-board/api';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { ExpressAdapter } from '@bull-board/express';
 
+import path from 'path';
+
 dotenv.config();
 
 const connection = { host: 'localhost', port: 6379 };
@@ -56,54 +58,77 @@ const worker = new Worker('mensajes-ia', async (job: Job) => {
 
 // Función para agendar
 async function agendarMensaje(mensaje: string, tiempoRecibido: string | undefined) {
-    let delay = 1000; // Por defecto 1 segundo
+    let delay = 1000; 
 
     if (tiempoRecibido) {
-        // Intentamos convertir a número
-        const numeroSueltos = parseInt(tiempoRecibido);
+        try {
+            const ahora = new Date();
+            // Leemos el formato YYYY-MM-DD HH:mm:ss que viene de la IA
+            const objetivo = parse(tiempoRecibido, 'yyyy-MM-dd HH:mm:ss', ahora);
+            const diferencia = differenceInMilliseconds(objetivo, ahora);
 
-        if (!isNaN(numeroSueltos)) {
-            // Si el usuario puso un número (ej: 5000), lo usamos directamente
-            delay = numeroSueltos;
-        } else {
-            // Si no es un número, intentamos parsear como fecha (AAAA-MM-DD HH:mm)
-            try {
-                const ahora = new Date();
-                const objetivo = parse(tiempoRecibido, 'yyyy-MM-dd HH:mm', ahora);
-                const diferencia = differenceInMilliseconds(objetivo, ahora);
-                
-                // Si la fecha es válida y es futura, usamos la diferencia
-                if (!isNaN(diferencia) && diferencia > 0) {
-                    delay = diferencia;
-                }
-            } catch (e) {
-                console.warn("⚠️ No se pudo entender el tiempo. Usando ejecución inmediata.");
-                delay = 1000;
+            if (!isNaN(diferencia) && diferencia > 0) {
+                delay = diferencia;
             }
+        } catch (e) {
+            console.error("❌ Error al procesar tiempo:", e);
         }
     }
 
-    // SEGURIDAD FINAL: Si por alguna razón delay sigue siendo NaN, forzamos 1000
     const finalDelay = isNaN(delay) ? 1000 : delay;
 
     await aiQueue.add('tarea-ia', 
-        { 
-            prompt: mensaje, 
-            modelos: [
-                'google/gemini-2.0-flash-lite-preview-02-05:free',
-                'meta-llama/llama-3.2-3b-instruct:free',
-                'openrouter/auto'
-            ] 
-        }, 
-        { 
-            delay: finalDelay, // Enviamos un número garantizado
-            attempts: 5,
-            backoff: { type: 'exponential', delay: 10000 }
-        }
+        { prompt: mensaje, modelos: ['google/gemini-2.0-flash-lite-preview-02-05:free', 'meta-llama/llama-3.2-3b-instruct:free', 'openrouter/auto'] }, 
+        { delay: finalDelay }
     );
     
-    console.log(`🕒 Tarea agendada para ejecutarse en ${finalDelay / 1000} segundos.`);
+    console.log(`🕒 [Queue] Agendado para dentro de: ${(finalDelay / 1000 / 60).toFixed(2)} minutos.`);
 }
+
+// 2. Función de extracción con IA (OPTIMIZADA)
+async function extraerFechaConIA(texto: string): Promise<string | undefined> {
+    // Usamos el formato local legible para humanos
+    const ahora = new Date().toLocaleString("es-ES", { 
+        year: 'numeric', month: '2-digit', day: '2-digit', 
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false 
+    }).replace(/,/, ''); 
+    
+    const promptSistema = `
+        Eres un extractor de tiempo para recordatorios.
+        FECHA ACTUAL (Local): ${ahora}
+        MENSAJE DEL USUARIO: "${texto}"
+        
+        INSTRUCCIONES:
+        1. Calcula la fecha basándote en la FECHA ACTUAL LOCAL proporcionada.
+        2. Devuelve EXCLUSIVAMENTE la fecha calculada en este formato: YYYY-MM-DD HH:mm:ss
+        3. Si el usuario no menciona tiempo, devuelve: AHORA.
+        4. No escribas nada más, ni la letra T, ni Z, ni explicaciones.
+    `;
+
+    try {
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                model: "google/gemini-2.0-flash-001",
+                messages: [{ role: "user", content: promptSistema }]
+            })
+        });
+
+        const data = await response.json();
+        const resultado = data.choices[0].message.content.trim();
+        
+        console.log(`🤖 IA calculó (Local): ${resultado}`);
+        return resultado === "AHORA" ? undefined : resultado;
+    } catch (e) {
+        return undefined;
+    }
+}
+
 
 // 1. Crear el adaptador de Express
 const serverAdapter = new ExpressAdapter();
@@ -116,6 +141,47 @@ createBullBoard({
 });
 
 const app = express();
+app.use(express.json()); // Para poder recibir datos del formulario
+app.use(express.urlencoded({ extended: true }));
+
+// Servir archivos estáticos (el HTML que crearemos)
+app.use(express.static('public'));
+
+// RUTA PARA AGENDAR DESDE LA WEB
+app.post('/api/agendar', async (req, res) => {
+    const { prompt } = req.body;
+    
+    if (!prompt) return res.status(400).json({ error: "Falta el mensaje" });
+
+    console.log(`🤖 IA analizando intención: "${prompt}"`);
+    
+    // Llamamos a la IA para que decida el 'cuando'
+    const fechaProgramada = await extraerFechaConIA(prompt);
+    
+    // Agendamos la tarea usando la fecha que la IA calculó
+    await agendarMensaje(prompt, fechaProgramada);
+    
+    res.json({ 
+        status: 'ok', 
+        message: 'Agente procesó la orden',
+        programadoPara: fechaProgramada || 'Inmediato'
+    });
+});
+
+// 2. Modifica tu ruta POST
+app.post('/api/agendar', async (req, res) => {
+    const { prompt } = req.body; // Ya no necesitamos que el usuario elija la fecha
+    
+    console.log(`🤖 IA analizando: "${prompt}"`);
+    
+    // La IA decide cuándo
+    const fechaExtraida = await extraerFechaConIA(prompt);
+    
+    // Agendamos con lo que la IA diga
+    await agendarMensaje(prompt, fechaExtraida);
+    
+    res.json({ status: 'ok', fechaProgramada: fechaExtraida || 'Inmediato' });
+});
 
 // 3. Conectar el router del dashboard
 app.use('/admin/queues', serverAdapter.getRouter());

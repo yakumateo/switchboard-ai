@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>SwitchBoard AI Control</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-white min-h-screen flex items-center justify-center">
+    <div class="bg-slate-800 p-8 rounded-2xl shadow-2xl w-full max-w-md border border-slate-700">
+        <h1 class="text-3xl font-bold mb-6 text-cyan-400 flex items-center gap-2">
+            <span>🚀</span> SwitchBoard AI
+        </h1>
+        
+        <div class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium mb-1">Tu Mensaje (Prompt)</label>
+                <textarea id="prompt" class="w-full p-3 rounded bg-slate-700 border border-slate-600 focus:ring-2 focus:ring-cyan-500 outline-none h-32" placeholder="Ej: Recuérdame revisar el correo mañana..."></textarea>
+            </div>
+            
+            <button onclick="enviar()" class="w-full bg-cyan-600 hover:bg-cyan-500 transition-colors py-3 rounded-lg font-bold text-lg">
+                Enviar Orden
+            </button>
+        </div>
+
+        <div class="mt-6 pt-6 border-t border-slate-700 flex justify-between text-sm">
+            <a href="/admin/queues" target="_blank" class="text-cyan-400 hover:underline">Ver Monitor de Colas →</a>
+        </div>
+    </div>
+
+    <script>
+        async function enviar() {
+    const prompt = document.getElementById('prompt').value;
+
+    if (!prompt.trim()) {
+        alert("⚠️ Por favor escribe algo");
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/agendar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // Quitamos "fecha" de aquí 👇 solo enviamos el prompt
+            body: JSON.stringify({ prompt }) 
+        });
+
+        if (res.ok) {
+            const data = await res.json();
+            alert(`✅ Tarea agendada: ${data.fechaProgramada || 'Ejecución inmediata'}`);
+            document.getElementById('prompt').value = "";
+        } else {
+            alert("❌ Error al agendar");
+        }
+    } catch (error) {
+        console.error("Error:", error);
+        alert("❌ No se pudo conectar con el servidor");
+    }
+}
+    </script>
+</body>
+</html>
