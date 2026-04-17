@@ -1,0 +1,23 @@
+{
+  "name": "switchboard-ai",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "ask": "tsx src/index.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.15.0",
+    "bullmq": "^5.74.1",
+    "dotenv": "^17.4.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0"
+  },
+  "description": ""
+}
