@@ -2,6 +2,7 @@ import fs from 'fs';
 import { Queue, Worker, Job } from 'bullmq';
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { parse, differenceInMilliseconds } from 'date-fns';
 
 dotenv.config();
 
@@ -49,29 +50,49 @@ const worker = new Worker('mensajes-ia', async (job: Job) => {
 }, { connection });
 
 // Función para agendar
-async function agendarMensaje(mensaje: string, retrasoMs: number) {
+async function agendarMensaje(mensaje: string, fechaDestino: string | number) {
+    let delay = 0;
+
+    if (typeof fechaDestino === 'string') {
+        // Intentamos entender formatos como "2023-12-31 23:59"
+        // Si no se pasa fecha, asumimos que es un número de ms
+        const ahora = new Date();
+        const objetivo = parse(fechaDestino, 'yyyy-MM-dd HH:mm', ahora);
+        delay = differenceInMilliseconds(objetivo, ahora);
+
+        if (delay < 0) {
+            console.error("❌ Error: La fecha ya pasó.");
+            return;
+        }
+    } else {
+        delay = fechaDestino;
+    }
+
     await aiQueue.add('tarea-ia', 
         { 
             prompt: mensaje, 
             modelos: [
-    'google/gemini-2.0-flash-lite-preview-02-05:free',
-    'google/gemma-3-4b-it:free',
-    'meta-llama/llama-3.2-3b-instruct:free',
-    'qwen/qwen-2.5-7b-instruct:free',      // Corregido: era 2.5
-    'microsoft/phi-3-medium-128k-instruct:free', // Corregido el ID
-    'openrouter/auto' // 👈 EL TRUCO MAESTRO: OpenRouter elige el mejor gratis disponible
-]
-            }, 
+                'google/gemini-2.0-flash-lite-preview-02-05:free',
+                'meta-llama/llama-3.2-3b-instruct:free',
+                'openrouter/auto'
+            ] 
+        }, 
         { 
-            delay: retrasoMs,
-            attempts: 5, // 🔄 ¡Inténtalo hasta 5 veces si falla!
-            backoff: {
-                type: 'exponential',
-                delay: 10000 // Espera 10s, luego 20s, luego 40s...
-            }
+            delay: delay,
+            attempts: 5,
+            backoff: { type: 'exponential', delay: 10000 }
         }
     );
-    console.log(`🕒 Tarea agendada. Si hay saturación, reintentaré automáticamente.`);
+    console.log(`🕒 Mensaje agendado para ejecutarse en ${delay / 1000} segundos...`);
+}
+
+// Lógica para capturar argumentos de la terminal
+const promptUser = process.argv[2];
+const tiempoUser = process.argv[3]; // Ejemplo: "2025-05-20 15:30" o solo un número
+
+if (promptUser) {
+    // Si pasas un tiempo lo usa, si no, lo lanza en 1 segundo
+    agendarMensaje(promptUser, tiempoUser || 1000);
 }
 
 // Detectar si el usuario pasó un mensaje por terminal
