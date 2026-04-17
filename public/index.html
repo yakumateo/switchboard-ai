@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>SwitchBoard AI Control</title>
+    <title>SwitchBoard AI - Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 
@@ -35,76 +35,108 @@
                 <h2 class="text-xl font-bold mb-4 text-orange-400 flex items-center gap-2">
                     <span>⏳</span> Próximas (Delayed)
                 </h2>
-                <div id="listaPendientes" class="space-y-3">
-                </div>
+                <div id="listaPendientes" class="space-y-3"></div>
             </div>
 
             <div class="bg-slate-800/50 p-6 rounded-2xl border border-slate-700">
                 <h2 class="text-xl font-bold mb-4 text-emerald-400 flex items-center gap-2">
                     <span>✅</span> Recientes (Completed)
                 </h2>
-                <div id="listaCompletadas" class="space-y-3">
-                </div>
+                <div id="listaCompletadas" class="space-y-3"></div>
             </div>
         </div>
     </div>
 
     <script>
-        // Función para cargar tareas desde el servidor
-        async function actualizarListas() {
-            const res = await fetch('/api/tareas');
-            const data = await res.json();
-
-            // Renderizar Pendientes
-            const listP = document.getElementById('listaPendientes');
-            listP.innerHTML = data.proximas.length ? '' : '<p class="text-slate-500 italic text-sm">No hay nada en espera...</p>';
-            data.proximas.forEach(t => {
-                listP.innerHTML += `
-                    <div class="bg-slate-700/50 p-3 rounded-lg border-l-4 border-orange-500">
-                        <p class="text-sm font-medium">"${t.prompt}"</p>
-                        <p class="text-xs text-slate-400 mt-1">Programado: ${t.correEn}</p>
-                    </div>
-                `;
-            });
-
-            // Renderizar Completadas
-            const listC = document.getElementById('listaCompletadas');
-            listC.innerHTML = data.historial.length ? '' : '<p class="text-slate-500 italic text-sm">Historial vacío.</p>';
-            data.historial.forEach(t => {
-                listC.innerHTML += `
-                    <div class="bg-slate-700/50 p-3 rounded-lg border-l-4 border-emerald-500 opacity-70">
-                        <p class="text-sm">"${t.prompt}"</p>
-                        <p class="text-xs text-slate-400 mt-1">Finalizado: ${t.finalizado}</p>
-                    </div>
-                `;
-            });
+        // 1. Configuración de Notificaciones
+        if (Notification.permission !== "granted") {
+            Notification.requestPermission();
         }
 
-        async function enviar() {
-            const prompt = document.getElementById('prompt').value;
-            if (!prompt.trim()) return;
+        let tareasVistas = new Set();
 
+        // 2. Función para ENVIAR (La que te faltaba)
+        async function enviar() {
+            const promptInput = document.getElementById('prompt');
+            const prompt = promptInput.value;
             const btn = document.getElementById('btnEnviar');
-            btn.innerText = "Procesando...";
+
+            if (!prompt.trim()) return alert("Escribe un mensaje");
+
+            btn.innerText = "🤖 IA Pensando...";
             btn.disabled = true;
 
-            const res = await fetch('/api/agendar', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt })
-            });
+            try {
+                const res = await fetch('/api/agendar', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt })
+                });
 
-            if (res.ok) {
-                document.getElementById('prompt').value = "";
-                await actualizarListas(); // Refrescamos las listas de inmediato
+                if (res.ok) {
+                    promptInput.value = "";
+                    actualizarListas();
+                }
+            } catch (error) {
+                console.error("Error al enviar:", error);
+            } finally {
+                btn.innerText = "Enviar Orden";
+                btn.disabled = false;
             }
-            btn.innerText = "Enviar Orden";
-            btn.disabled = false;
         }
 
-        // Cargar al iniciar y cada 5 segundos
+        // 3. Función para ACTUALIZAR LISTAS
+        async function actualizarListas() {
+            try {
+                const res = await fetch('/api/tareas');
+                const data = await res.json();
+
+                const listP = document.getElementById('listaPendientes');
+                listP.innerHTML = data.proximas.length ? '' : '<p class="text-slate-500 italic text-sm">Nada pendiente.</p>';
+                data.proximas.forEach(t => {
+                    listP.innerHTML += `
+                        <div class="bg-slate-700/50 p-3 rounded-lg border-l-4 border-orange-500 flex justify-between items-center">
+                            <div>
+                                <p class="text-sm font-medium">"${t.prompt}"</p>
+                                <p class="text-xs text-slate-400">📅 ${t.correEn}</p>
+                            </div>
+                            <button onclick="eliminarTarea('${t.id}')" class="hover:text-red-400 transition-colors">🗑️</button>
+                        </div>`;
+                });
+
+                const listC = document.getElementById('listaCompletadas');
+                listC.innerHTML = data.historial.length ? '' : '<p class="text-slate-500 italic text-sm">Historial vacío.</p>';
+                data.historial.forEach(t => {
+                    if (!tareasVistas.has(t.id)) {
+                        lanzarNotificacion(t.prompt);
+                        tareasVistas.add(t.id);
+                    }
+                    listC.innerHTML += `
+                        <div class="bg-slate-700/50 p-3 rounded-lg border-l-4 border-emerald-500 opacity-70">
+                            <p class="text-sm">"${t.prompt}"</p>
+                            <p class="text-[10px] text-emerald-400">FINALIZADO</p>
+                        </div>`;
+                });
+            } catch (e) { console.error("Error de polling", e); }
+        }
+
+        // 4. ELIMINAR Y NOTIFICAR
+        async function eliminarTarea(id) {
+            if (confirm("¿Cancelar tarea?")) {
+                await fetch(`/api/tareas/${id}`, { method: 'DELETE' });
+                actualizarListas();
+            }
+        }
+
+        function lanzarNotificacion(mensaje) {
+            if (Notification.permission === "granted") {
+                new Notification("🚀 Tarea Completada", { body: mensaje });
+                new Audio('https://assets.mixkit.co/active_storage/sfx/2354/2354-preview.mp3').play();
+            }
+        }
+
+        setInterval(actualizarListas, 3000);
         actualizarListas();
-        setInterval(actualizarListas, 5000);
     </script>
 </body>
 

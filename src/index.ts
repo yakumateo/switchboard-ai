@@ -170,19 +170,13 @@ app.post('/api/agendar', async (req, res) => {
 
 // 2. Modifica tu ruta POST
 app.post('/api/agendar', async (req, res) => {
-    const { prompt } = req.body; // Ya no necesitamos que el usuario elija la fecha
-    
-    console.log(`🤖 IA analizando: "${prompt}"`);
-    
-    // La IA decide cuándo
+    const { prompt } = req.body;
     const fechaExtraida = await extraerFechaConIA(prompt);
-    
-    // Agendamos con lo que la IA diga
     await agendarMensaje(prompt, fechaExtraida);
-    
-    res.json({ status: 'ok', fechaProgramada: fechaExtraida || 'Inmediato' });
+    res.json({ status: 'ok' });
 });
 
+// 1. Obtener tareas para el dashboard
 app.get('/api/tareas', async (req, res) => {
     // Obtenemos los últimos trabajos de la cola
     const [pendientes, completadas] = await Promise.all([
@@ -204,6 +198,18 @@ app.get('/api/tareas', async (req, res) => {
     };
 
     res.json(respuesta);
+});
+
+// 2. Eliminar tarea
+app.delete('/api/tareas/:id', async (req, res) => {
+    const { id } = req.params;
+    const job = await aiQueue.getJob(id);
+
+    if (job) {
+        await job.remove();
+        return res.json({ ok: true, message: "Tarea eliminada" });
+    }
+    res.status(404).json({ error: "Tarea no encontrada" });
 });
 
 // 3. Conectar el router del dashboard
